@@ -53,7 +53,7 @@ object StressMultiJvmSpec extends MultiNodeConfig {
 
   // Note that this test uses default configuration,
   // not MultiNodeClusterSpec.clusterConfig
-  commonConfig(ConfigFactory.parseString("""
+  commonConfig(debugConfig(on = true).withFallback(ConfigFactory.parseString("""
     akka.test.cluster-stress-spec {
       # scale the nr-of-nodes* settings with this factor
       nr-of-nodes-factor = 1
@@ -89,6 +89,7 @@ object StressMultiJvmSpec extends MultiNodeConfig {
       tree-width = 5
       tree-levels = 4
       report-metrics-interval = 10s
+      report-results-logged = false
       # scale convergence within timeouts with this factor
       convergence-within-factor = 1.0
     }
@@ -132,7 +133,7 @@ object StressMultiJvmSpec extends MultiNodeConfig {
         }
       }
     }
-    """))
+    """)))
 
   class Settings(conf: Config) {
     private val testConfig = conf.getConfig("akka.test.cluster-stress-spec")
@@ -168,6 +169,7 @@ object StressMultiJvmSpec extends MultiNodeConfig {
     val treeWidth = getInt("tree-width")
     val treeLevels = getInt("tree-levels")
     val reportMetricsInterval = getDuration("report-metrics-interval")
+    val reportResultsLogged = getBoolean("report-results-logged")
     val convergenceWithinFactor = getDouble("convergence-within-factor")
 
     require(numberOfSeedNodes + numberOfNodesJoiningToSeedNodesInitially + numberOfNodesJoiningOneByOneSmall +
@@ -202,7 +204,8 @@ object StressMultiJvmSpec extends MultiNodeConfig {
    * expected results has been collected. It shuts down
    * itself when expected results has been collected.
    */
-  class ClusterResultAggregator(title: String, expectedResults: Int, reportMetricsInterval: FiniteDuration) extends Actor with ActorLogging {
+  class ClusterResultAggregator(title: String, expectedResults: Int, reportMetricsInterval: FiniteDuration,
+                                reportResultsLogged: Boolean) extends Actor with ActorLogging {
     val cluster = Cluster(context.system)
     var reportTo: Option[ActorRef] = None
     var results = Vector.empty[ClusterResult]
@@ -228,12 +231,14 @@ object StressMultiJvmSpec extends MultiNodeConfig {
       case ClusterMetricsChanged(clusterMetrics) ⇒ nodeMetrics = clusterMetrics
       case PhiResult(from, phiValues)            ⇒ phiValuesObservedByNode += from -> phiValues
       case ReportTick ⇒
+        if (reportResultsLogged)
         log.info(s"[${title}] in progress\n${formatMetrics}\n\n${formatPhi}")
       case r: ClusterResult ⇒
         results :+= r
         if (results.size == expectedResults) {
           val aggregated = AggregatedClusterResult(title, maxDuration, totalClusterStats)
-          log.info(s"[${title}] completed in [${aggregated.duration.toMillis}] ms\n${aggregated.clusterStats}\n${formatMetrics}\n\n${formatPhi}")
+          if (reportResultsLogged)
+            log.info(s"[${title}] completed in [${aggregated.duration.toMillis}] ms\n${aggregated.clusterStats}\n${formatMetrics}\n\n${formatPhi}")
           reportTo foreach { _ ! aggregated }
           context stop self
         }
@@ -303,13 +308,14 @@ object StressMultiJvmSpec extends MultiNodeConfig {
    * ClusterResultAggregator. Logs the list of historical
    * results when a new AggregatedClusterResult is received.
    */
-  class ClusterResultHistory extends Actor with ActorLogging {
+  class ClusterResultHistory(reportResultsLogged: Boolean) extends Actor with ActorLogging {
     var history = Vector.empty[AggregatedClusterResult]
 
     def receive = {
       case result: AggregatedClusterResult ⇒
         history :+= result
-        log.info("Cluster result history\n" + formatHistory)
+        if (reportResultsLogged)
+          log.info("Cluster result history\n" + formatHistory)
     }
 
     def formatHistory: String =
@@ -626,20 +632,20 @@ abstract class StressSpec
 
   def createResultAggregator(title: String, expectedResults: Int, includeInHistory: Boolean): Unit = {
     runOn(roles.head) {
-      val aggregator = system.actorOf(Props(new ClusterResultAggregator(title, expectedResults, reportMetricsInterval)),
+      val aggregator = system.actorOf(Props(new ClusterResultAggregator(title, expectedResults, reportMetricsInterval, reportResultsLogged)),
         name = "result" + step)
       if (includeInHistory) aggregator ! ReportTo(Some(clusterResultHistory))
       else aggregator ! ReportTo(None)
     }
     enterBarrier("result-aggregator-created-" + step)
-    runOn(roles.take(nbrUsedRoles): _*) {
+    runOn(roles.take(expectedResults): _*) {
       phiObserver ! ReportTo(Some(clusterResultAggregator))
     }
   }
 
   def clusterResultAggregator: ActorRef = system.actorFor(node(roles.head) / "user" / ("result" + step))
 
-  lazy val clusterResultHistory = system.actorOf(Props[ClusterResultHistory], "resultHistory")
+  lazy val clusterResultHistory = system.actorOf(Props(new ClusterResultHistory(reportResultsLogged)), "resultHistory")
 
   lazy val phiObserver = system.actorOf(Props[PhiObserver], "phiObserver")
 
@@ -732,7 +738,7 @@ abstract class StressSpec
             testConductor.shutdown(removeRole, 0).await
           }
         }
-        awaitUpConvergence(currentRoles.size, timeout = remaining)
+        awaitUpConvergence(currentRoles.size, Set(removeRole), remaining)
       }
     }
 
