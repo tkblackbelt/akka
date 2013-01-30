@@ -44,7 +44,7 @@ object AkkaBuild extends Build {
     id = "akka",
     base = file("."),
     settings = parentSettings ++ Release.settings ++ Unidoc.settings ++ Publish.versionSettings ++
-      SphinxSupport.settings ++ Dist.settings ++ mimaSettings ++ Seq(
+      SphinxSupport.settings ++ Dist.settings ++ mimaSettings ++ unidocScaladocSettings ++ Seq(
       testMailbox in GlobalScope := System.getProperty("akka.testMailbox", "false").toBoolean,
       parallelExecution in GlobalScope := System.getProperty("akka.parallelExecution", "false").toBoolean,
       Publish.defaultPublishTo in ThisBuild <<= crossTarget / "repository",
@@ -523,7 +523,7 @@ object AkkaBuild extends Build {
     (if (useOnlyTestTags.isEmpty) Seq.empty else Seq("-n", if (multiNodeEnabled) useOnlyTestTags.mkString("\"", " ", "\"") else useOnlyTestTags.mkString(" ")))
   }
 
-  lazy val defaultSettings = baseSettings ++ formatSettings ++ mimaSettings ++ lsSettings ++ Seq(
+  lazy val defaultSettings = baseSettings ++ formatSettings ++ mimaSettings ++ lsSettings ++ scaladocSettings ++ Seq(
     // compile options
     scalacOptions in Compile ++= Seq("-encoding", "UTF-8", "-target:jvm-1.6", "-deprecation", "-feature", "-unchecked", "-Xlog-reflective-calls", "-Ywarn-adapted-args"),
     javacOptions in Compile ++= Seq("-source", "1.6", "-target", "1.6", "-Xlint:unchecked", "-Xlint:deprecation"),
@@ -641,6 +641,33 @@ object AkkaBuild extends Build {
       case (false, _) => Seq.empty
     })
 
+  lazy val scaladocDiagramsEnabled = System.getProperty("akka.scaladoc.diagrams", "true").toBoolean
+  lazy val scaladocOptions = List("-implicits") ::: (if (scaladocDiagramsEnabled) List("-diagrams") else Nil)
+
+  lazy val scaladocSettings: Seq[sbt.Setting[_]]= {
+    Seq(scalacOptions in (Compile, doc) ++= scaladocOptions) ++
+      (if (scaladocDiagramsEnabled)
+        Seq(doc in Compile <<= (doc in Compile) map scaladocVerifier)
+       else Seq.empty)
+  }
+
+  lazy val unidocScaladocSettings: Seq[sbt.Setting[_]]= {
+    Seq(scalacOptions in doc ++= scaladocOptions) ++
+      (if (scaladocDiagramsEnabled)
+        Seq(Unidoc.unidoc <<= Unidoc.unidoc map scaladocVerifier)
+      else Seq.empty)
+  }
+
+  def scaladocVerifier(file: File): File= {
+    val source = scala.io.Source.fromFile(file / "package.html")
+    // FIXME: So this never fails the build, since this include is added even if the diagram generation
+    // fails. We could recursively look for a couple of html files and check if they contain
+    // id="inheritance-diagram-container"
+    val noDiagrams = source.getLines().forall( !_.contains("src=\"lib/diagrams.js\" id=\"diagrams-js\"") )
+    source.close()
+    if (noDiagrams) throw new AssertionError("ScalaDoc diagrams not generated!")
+    file
+  }
 
   lazy val mimaSettings = mimaDefaultSettings ++ Seq(
     // MiMa

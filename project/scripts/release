@@ -77,6 +77,8 @@
 # Run the script in two stages.
 #  First a dry run:
 #    shell> project/scripts/release --dry-run <version>
+#    Check that the generated documentation contains Type Hierarchy diagrams
+#    shell> <browser> target/unidoc/index.html
 #  And if all goes well a real run:
 #    shell> project/scripts/release <version>
 #
