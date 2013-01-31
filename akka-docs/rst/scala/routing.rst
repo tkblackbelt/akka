@@ -4,8 +4,8 @@
 Routing (Scala)
 ===============
 
-A Router is an actor that routes incoming messages to outbound actors.
-The router routes the messages sent to it to its underlying actors called 'routees'.
+A Router is an actor that receives messages and efficiently routes them to
+other actors, known as its *routees*.
 
 Akka comes with some defined routers out of the box, but as you will see in this chapter it
 is really easy to create your own. The routers shipped with Akka are:
@@ -114,7 +114,7 @@ Routers vs. Supervision
 ^^^^^^^^^^^^^^^^^^^^^^^
 
 As explained in the previous section, routers create new actor instances as
-children of the “head” router, who therefor also is their supervisor. The
+children of the “head” router, who is therefore also their supervisor. The
 supervisor strategy of this actor can be configured by means of the
 :meth:`RouterConfig.supervisorStrategy` property, which is supported for all
 built-in router types. It defaults to “always escalate”, which leads to the
@@ -133,6 +133,8 @@ Setting the strategy is easily done:
 Another potentially useful approach is to give the router the same strategy as
 its parent, which effectively treats all actors in the pool as if they were
 direct children of their grand-parent instead.
+
+.. _note-router-terminated-children-scala:
 
 .. note::
 
@@ -258,6 +260,12 @@ This is an example of how to define a broadcast router in configuration:
 
 .. includecode:: code/docs/routing/RouterViaConfigDocSpec.scala#config-broadcast
 
+.. note::
+
+  Broadcast routers always broadcast *every* message to their routees. If you do not want to
+  broadcast every message, then you can use a non-broadcasting router and use
+  :ref:`broadcast-messages-scala` as needed.
+
 
 ScatterGatherFirstCompletedRouter
 *********************************
@@ -321,18 +329,66 @@ This is an example of how to define a consistent-hashing router in configuration
 .. includecode:: code/docs/routing/RouterViaConfigDocSpec.scala#config-consistent-hashing
 
 
-Broadcast Messages
-^^^^^^^^^^^^^^^^^^
+Handling for Special Messages
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-There is a special type of message that will be sent to all routees regardless of the router.
-This message is called ``Broadcast`` and is used in the following manner:
+Most messages sent to routers will be forwarded according to the routers' usual routing rules.
+However there are a few types of messages that have special behaviour.
+
+.. _broadcast-messages-scala:
+
+Broadcast Messages
+******************
+
+A ``Broadcast`` message can be used to send a message to *all* of a router's routees. When a router
+receives a ``Broadcast`` message, it will broadcast that message's payload all routees, no matter
+how that router normally routes its messages.
+
+The example below shows how you would use a ``Broadcast`` message to send a very important message
+to every routee of a router.
 
 .. code-block:: scala
 
   router ! Broadcast("Watch out for Davy Jones' locker")
 
-Only the actual message is forwarded to the routees, i.e. "Watch out for Davy Jones' locker" in the example above.
-It is up to the routee implementation whether to handle the broadcast message or not.
+In this example the router receives the ``Broadcast`` message, extracts its payload (``"Watch out
+for Davy Jones' locker"``), and then sends the payload on to all of the router's routees. It is up
+to each each routee actor to handle the received payload message.
+
+PoisonPill Messages
+*******************
+
+A ``PoisonPill`` message has :ref:`special handling <poison-pill-scala>` for all actors - and that
+includes routers. When any actor, including a router, receives a ``PoisonPill`` message, that actor
+will be stopped. In addition, for a router, it is important to note that ``PoisonPill`` messages are
+processed by the router only. ``PoisonPill`` messages sent to a router *are not* sent on to routees.
+
+A router, whether stopped by a ``PoisonPill`` message or otherwise, follows the :ref:`normal rules
+<stopping-actors-scala>` for a stopped actor, ie it will stop all its children, giving them a chance
+to finish processing their current message. Only each child's current message is processed; any
+other messages in childrens' mailboxes *will not* be processed.
+
+If you wish to stop a router and its children, but you would like the children to first process all
+the messages in their mailboxes, then you should not send a ``PoisonPill`` message to the router.
+Instead you should send a ``PoisonPill`` message to each child, and ask them to each stop by
+themselves. This can be accomplished by wrapping a ``PoisonPill`` message inside a broadcast
+message.
+
+.. code-block:: scala
+
+  router ! Broadcast(PoisonPill)
+
+With the code above, each child will receive a broadcast of a ``PoisonPill`` message. The
+``PoisonPill`` message will be enqueued in each child's mailbox. Each child will continue to process
+its messages as normal. Eventually they will each process their ``PoisonPill`` message and come to a
+stop. After all children have stopped the router will itself be :ref:`stopped automatically
+<note-router-terminated-children-scala>`.
+
+.. note::
+
+  Brendan W McAdams' excellent blog post `Distributing Akka Workloads - And Shutting Down Afterwards
+  <http://blog.evilmonkeylabs.com/2013/01/17/Distributing_Akka_Workloads_And_Shutting_Down_After/>`_
+  discusses in more detail how ``PoisonPill`` messages can be used to shut down routers and routees.
 
 Dynamically Resizable Routers
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

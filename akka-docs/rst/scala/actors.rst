@@ -626,6 +626,8 @@ enables cleaning up of resources:
   actor and create its replacement in response to the :class:`Terminated`
   message which will eventually arrive.
 
+.. _poison-pill-scala:
+
 PoisonPill
 ----------
 
